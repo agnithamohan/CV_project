@@ -5,6 +5,7 @@ from unet import Unet
 from utils import init_weights,init_weights_orthogonal_normal, l2_regularisation
 import torch.nn.functional as F
 from torch.distributions import Normal, Independent, kl
+import numpy as np
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -21,7 +22,7 @@ class Encoder(nn.Module):
 
         if posterior:
             #To accomodate for the mask that is concatenated at the channel axis, we increase the input_channels.
-            self.input_channels += 1
+            self.input_channels += 256
 
         layers = []
         for i in range(len(self.num_filters)):
@@ -43,8 +44,11 @@ class Encoder(nn.Module):
                 layers.append(nn.ReLU(inplace=True))
 
         self.layers = nn.Sequential(*layers)
-
+	#def init_normal(m):
+	#    if type(m) == nn.Conv2d or type(m) == nn.ConvTranspose2d:
+        #        nn.init.uniform_(m.weight)
         self.layers.apply(init_weights)
+	#self.layers.apply(init_normal)
 
     def forward(self, input):
         output = self.layers(input)
@@ -76,9 +80,10 @@ class AxisAlignedConvGaussian(nn.Module):
 
         nn.init.kaiming_normal_(self.conv_layer.weight, mode='fan_in', nonlinearity='relu')
         nn.init.normal_(self.conv_layer.bias)
+	#nn.init.uniform_(self.conv_layer.weight, a=-0.08, b=0.08)
 
     def forward(self, input, segm=None):
-
+        # print("input", input.shape)
         #If segmentation is not none, concatenate the mask to the channel axis of the input
         if segm is not None:
             self.show_img = input
@@ -87,26 +92,37 @@ class AxisAlignedConvGaussian(nn.Module):
             self.show_concat = input
             self.sum_input = torch.sum(input)
 
+        # print("input", input.shape)
+
         encoding = self.encoder(input)
+        # print("encoding", encoding.shape)
         self.show_enc = encoding
 
         #We only want the mean of the resulting hxw image
         encoding = torch.mean(encoding, dim=2, keepdim=True)
+        # print("encoding", encoding.shape)
         encoding = torch.mean(encoding, dim=3, keepdim=True)
+        # print("encoding", encoding.shape)
 
         #Convert encoding to 2 x latent dim and split up for mu and log_sigma
         mu_log_sigma = self.conv_layer(encoding)
+        # print("mu_log_sigma", mu_log_sigma.shape)
 
         #We squeeze the second dimension twice, since otherwise it won't work when batch size is equal to 1
         mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
+        # print("mu_log_sigma", mu_log_sigma.shape)
         mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
-
+        # print("mu_log_sigma", mu_log_sigma.shape)
         mu = mu_log_sigma[:,:self.latent_dim]
         log_sigma = mu_log_sigma[:,self.latent_dim:]
-
+        # print("MU_SIGMA", mu, log_sigma)
         #This is a multivariate normal with diagonal covariance matrix sigma
         #https://github.com/pytorch/pytorch/pull/11178
-        dist = Independent(Normal(loc=mu, scale=torch.exp(log_sigma)),1)
+        # dist = Independent(Normal(loc=mu, scale=torch.exp(log_sigma)),1)
+        dist = Independent(Normal(loc=mu, scale=log_sigma), 1)
+	print(self.name,":")
+        print("ACTUAL MU", mu)
+        print("ACTUAL SIGMA", log_sigma)
         return dist
 
 class Fcomb(nn.Module):
@@ -167,13 +183,20 @@ class Fcomb(nn.Module):
         """
         if self.use_tile:
             z = torch.unsqueeze(z,2)
+            # print("Z", z.shape)
             z = self.tile(z, 2, feature_map.shape[self.spatial_axes[0]])
+            # print("Z", z.shape)
             z = torch.unsqueeze(z,3)
+            # print("Z", z.shape)
             z = self.tile(z, 3, feature_map.shape[self.spatial_axes[1]])
+            # print("Z", z.shape)
 
             #Concatenate the feature map (output of the UNet) and the sample taken from the latent space
             feature_map = torch.cat((feature_map, z), dim=self.channel_axis)
+            # print("FEATUREMAP", feature_map.shape)
             output = self.layers(feature_map)
+            # print("output", output.shape)
+            # return output
             return self.last_layer(output)
 
 
@@ -187,7 +210,7 @@ class ProbabilisticUnet(nn.Module):
     no_cons_per_block: no convs per block in the (convolutional) encoder of prior and posterior
     """
 
-    def __init__(self, input_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=10.0):
+    def __init__(self, input_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=8, no_convs_fcomb=4, beta=10.0):
         super(ProbabilisticUnet, self).__init__()
         self.input_channels = input_channels
         self.num_classes = num_classes
@@ -211,6 +234,7 @@ class ProbabilisticUnet(nn.Module):
         """
         if training:
             self.posterior_latent_space = self.posterior.forward(patch, segm)
+            # print("LATENT_SPACE", self.posterior_latent_space)
         self.prior_latent_space = self.prior.forward(patch)
         self.unet_features = self.unet.forward(patch,False)
 
@@ -251,7 +275,14 @@ class ProbabilisticUnet(nn.Module):
         """
         if analytic:
             #Neeed to add this to torch source code, see: https://github.com/pytorch/pytorch/issues/13545
+            # print(self.posterior_latent_space.base_dist)
+            # print(self.prior_latent_space.base_dist)
+            # print(self.posterior_latent_space.base_dist.scale)
+            # print(self.prior_latent_space.base_dist.scale)
+            
+
             kl_div = kl.kl_divergence(self.posterior_latent_space, self.prior_latent_space)
+            # print("FUNCTIONAL KLDIV", F.kl_div(self.posterior_latent_space.base_dist.scale, self.prior_latent_space.base_dist))
         else:
             if calculate_posterior:
                 z_posterior = self.posterior_latent_space.rsample()
@@ -265,16 +296,83 @@ class ProbabilisticUnet(nn.Module):
         Calculate the evidence lower bound of the log-likelihood of P(Y|X)
         """
 
-        criterion = nn.BCEWithLogitsLoss(size_average = False, reduce=False, reduction=None)
+        criterion = torch.nn.L1Loss(reduction='none')
         z_posterior = self.posterior_latent_space.rsample()
+        # print("ZPOSTERIOR", z_posterior.shape)
+        # self.kl = torch.mean(self.kl_divergence(analytic=analytic_kl, calculate_posterior=False, z_posterior=z_posterior))
+        #self.kl = torch.mean(self.kl_divergence(analytic=False, calculate_posterior=False, z_posterior=z_posterior))
+	#print(self.posterior_latent_space.loc)
+
+#	mu2 = self.posterior_latent_space.base_dist.loc[0].view((-1, 1))
+#        mu1 = self.prior_latent_space.base_dist.loc[0].view((-1, 1))
         
-        self.kl = torch.mean(self.kl_divergence(analytic=analytic_kl, calculate_posterior=False, z_posterior=z_posterior))
+#	sigma2 = torch.diag(self.posterior_latent_space.base_dist.scale[0])
+#        sigma1 = torch.diag(self.prior_latent_space.base_dist.scale[0])
+        mu2 = self.posterior_latent_space.base_dist.loc[0]
+        mu1 = self.prior_latent_space.base_dist.loc[0]
+
+        sigma2 = self.posterior_latent_space.base_dist.scale[0]
+        sigma1 = self.prior_latent_space.base_dist.scale[0]
+	#mu2 = self.posterior_latent_space.loc[0].view((-1, 1))
+        #mu1 = self.prior_latent_space.loc[0].view((-1, 1))
+        #sigma2 = torch.diag(self.posterior_latent_space.scale[0])
+        #sigma1 = torch.diag(self.prior_latent_space.scale[0])
+        #print(mu1.shape)
+        #print(mu2.shape)
+        #print(sigma1.shape)
+        #print(sigma2.shape)
+        '''detsigma1 = torch.det(sigma1)
+        detsigma2 = torch.det(sigma2)
+        invsigma2 = torch.inverse(sigma2)
+	print("SIGMA1", sigma1)
+	print("SIGMA2", sigma2)
+	print("DET", detsigma1, detsigma2)
+	       
+ 
+        a = torch.log(detsigma2/detsigma1) - mu1.shape[-1]
+        b = torch.trace(torch.mm(invsigma2, sigma1))
+        c = torch.mm(torch.mm(torch.t(mu2-mu1), invsigma2), mu2-mu1)
+        print("a:", a)
+        print("b:", b)
+        print("c:", c)
+        klloss = (a+b+c) * 0.5
+	'''
+	logvar = sigma1 - sigma2
+	mean = mu1 - mu1
+
+        KLD = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp()) 
+        # muloss = torch.nn.MSELoss()(mu1, mu2)
+        # sigmaloss = torch.nn.MSELoss()(sigma1, sigma2)
+        
+        # t1 = torch.log(torch.abs(sigma2/(sigma1+(1.0e-5))) + 1.0e-5)
+        # t2 = ((sigma1.pow(2) + (mu1-mu2).pow(2))/((2*sigma2.pow(2))+(1.0e-5))) 
+        # klloss = t1+t2
+        
+        # klloss = muloss + sigmaloss
+
+        # print("KLL LOSS DETAILS")
+        # print(muloss.item())
+        # print(sigmaloss.item())
+        # print(klloss.item())
+        # print("TRUE KL:", klloss)
+        # print("T1:", t1)
+        # print("T2:", t2)
+        # print("mu1:", mu1)
+        # print("mu2:", mu2)
+        # print("sigma1:", sigma1)
+        # print("sigma2:", sigma2)
+        #self.kl = torch.mean(klloss)
+	self.kl = KLD 
 
         #Here we use the posterior sample sampled above
         self.reconstruction = self.reconstruct(use_posterior_mean=reconstruct_posterior_mean, calculate_posterior=False, z_posterior=z_posterior)
+
+        # print("RECONSTRUCTION LOSS", self.reconstruction.shape)
         
         reconstruction_loss = criterion(input=self.reconstruction, target=segm)
         self.reconstruction_loss = torch.sum(reconstruction_loss)
         self.mean_reconstruction_loss = torch.mean(reconstruction_loss)
-
-        return -(self.reconstruction_loss + self.beta * self.kl)
+        print("Reconstruction Loss:", self.mean_reconstruction_loss.item())
+        print("KL Loss", self.kl.item())
+        return -(self.mean_reconstruction_loss + self.beta * self.kl)
+        # return -self.kl
