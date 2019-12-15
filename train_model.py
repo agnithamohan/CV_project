@@ -6,8 +6,24 @@ from probabilistic_unet import ProbabilisticUnet
 from data import GanDataset
 from utils import l2_regularisation
 from model_helpers import getModelFilePath, getLatestModelEpoch, loadModel, saveModel
+import pickle
+import argparse
+import sys
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-L", "--layer", help="the fpn layer to train")
+args = parser.parse_args()
+
+LAYER = None
+
+if not args.layer:
+    print("Please supply layername using --layer")
+    sys.exit()
+else:
+    LAYER = args.layer
+
+
 MODELS_DEST = '/scratch/amr1215/probunet_models/'
-LAYER = "fpn_res5_2_sum"
 GAN_DATASET = {
     'TRAIN': {
         'INPUT': "/scratch/amr1215/gan_dataset/train/inputs",
@@ -31,7 +47,7 @@ optimizer = torch.optim.Adam(net.parameters(), lr=1e-4, weight_decay=0)
 
 # LOAD PRESAVED MODEL IF EXISTS
 currEpoch = 0
-max_epochs = 1000
+max_epochs = 20
 savedEpoch = getLatestModelEpoch(MODELS_DEST, LAYER)
 if savedEpoch:
     loadModel(net, optimizer, getModelFilePath(MODELS_DEST, LAYER, savedEpoch))
@@ -41,11 +57,15 @@ if savedEpoch:
 for epoch in range(currEpoch, max_epochs):
     # TRAINING
     net.train()
+    train_losses = []
+    train_targetLosses = []
+    train_count = 0
     for idx, data in enumerate(train_loader):
         print("Epoch:", epoch, "idx:", idx)
         inp = data["input"][0].cuda()
         gt = data["gt"][0].cuda()
-        print("Target Loss:", torch.nn.L1Loss()(inp, gt).item())
+	targetLoss = torch.nn.L1Loss()(inp, gt)
+        print("Target Loss:", targetLoss.item())
         net.forward(inp, gt, training=True)
         elbo = net.elbo(gt)
         l2posterior = l2_regularisation(net.posterior)
@@ -54,9 +74,14 @@ for epoch in range(currEpoch, max_epochs):
         reg_loss = l2posterior + l2prior + l2fcomb
         loss = -elbo + 1e-5 * reg_loss
         print("Total Loss: ", loss.item())
+	train_losses.append(loss.item())
+	train_targetLosses.append(targetLoss.item())
+	train_count += 1
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+    with open(getModelFilePath(MODELS_DEST, LAYER, epoch).split('.')[0]+'_train_loss', 'wb') as f:
+        pickle.dump({'losses': train_losses, 'targetLosses': train_targetLosses, 'count': train_count}, f)
     
     # SAVE CHECKPOINT
     if epoch % 2 == 0:
@@ -64,8 +89,10 @@ for epoch in range(currEpoch, max_epochs):
     
     # EVALUATION 
     net.eval()
-    totalLoss = 0.0
-    count = 0
+    eval_totalLoss = 0.0
+    eval_losses = []
+    eval_targetLosses = []
+    eval_count = 0
     betterCount = 0
     for idx, data in enumerate(eval_loader):
         print("EVAL idx:", idx)
@@ -83,9 +110,12 @@ for epoch in range(currEpoch, max_epochs):
         print("Total Loss: ", loss.item())
         if(loss.item() < lossBaseline):
             betterCount += 1
-        count += 1
-        totalLoss += loss.item()
-    print("EVAL Total Loss: ", totalLoss)
-    print("EVAL Average Loss: ", totalLoss/count)
-    print("EVAL Better than Target Loss: ", betterCount, "/", count)
-        
+	eval_losses.append(loss.item())
+        eval_targetLosses.append(lossBaseline)
+        eval_count += 1
+        eval_totalLoss += loss.item()
+    print("EVAL Total Loss: ", eval_totalLoss)
+    print("EVAL Average Loss: ", eval_totalLoss/eval_count)
+    print("EVAL Better than Target Loss: ", betterCount, "/", eval_count)
+    with open(getModelFilePath(MODELS_DEST, LAYER, epoch).split('.')[0]+'_eval_loss', 'wb') as f:
+        pickle.dump({'losses': eval_losses, 'targetLosses': eval_targetLosses, 'count': eval_count}, f)
