@@ -57,9 +57,17 @@ if savedEpoch:
 for epoch in range(currEpoch, max_epochs):
     # TRAINING
     net.train()
-    train_losses = []
+    train_losses = {
+        'rec': [],
+        'kl': [],
+        'l2pos': [],
+        'l2pri': [],
+        'l2fcom': [],
+        'total': []
+    }
     train_targetLosses = []
     train_count = 0
+    betterCount = 0
     for idx, data in enumerate(train_loader):
         print("Epoch:", epoch, "idx:", idx)
         inp = data["input"][0].cuda()
@@ -67,21 +75,29 @@ for epoch in range(currEpoch, max_epochs):
 	targetLoss = torch.nn.L1Loss()(inp, gt)
         print("Target Loss:", targetLoss.item())
         net.forward(inp, gt, training=True)
-        elbo = net.elbo(gt)
+        reconLoss, klLoss = net.elbo(gt)
+        elbo = -(reconLoss + 10.0 * klLoss)
         l2posterior = l2_regularisation(net.posterior)
         l2prior = l2_regularisation(net.prior)
         l2fcomb = l2_regularisation(net.fcomb.layers)
         reg_loss = l2posterior + l2prior + l2fcomb
         loss = -elbo + 1e-5 * reg_loss
+        if(loss.item() < lossBaseline):
+            betterCount += 1
         print("Total Loss: ", loss.item())
-	train_losses.append(loss.item())
-	train_targetLosses.append(targetLoss.item())
-	train_count += 1
+        train_losses['rec'].append(reconLoss.item())
+        train_losses['kl'].append(klLoss.item())
+        train_losses['l2pos'].append(l2posterior.item())
+        train_losses['l2pri'].append(l2prior.item())
+        train_losses['l2fcom'].append(l2fcomb.item())
+        train_losses['total'].append(loss.item())
+        train_targetLosses.append(targetLoss.item())
+        train_count += 1
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
     with open(getModelFilePath(MODELS_DEST, LAYER, epoch).split('.')[0]+'_train_loss', 'wb') as f:
-        pickle.dump({'losses': train_losses, 'targetLosses': train_targetLosses, 'count': train_count}, f)
+        pickle.dump({'losses': train_losses, 'targetLosses': train_targetLosses, 'count': train_count, 'betterCount': betterCount}, f)
     
     # SAVE CHECKPOINT
     if epoch % 2 == 0:
@@ -90,7 +106,14 @@ for epoch in range(currEpoch, max_epochs):
     # EVALUATION 
     net.eval()
     eval_totalLoss = 0.0
-    eval_losses = []
+    eval_losses = {
+        'rec': [],
+        'kl': [],
+        'l2pos': [],
+        'l2pri': [],
+        'l2fcom': [],
+        'total': []
+    }
     eval_targetLosses = []
     eval_count = 0
     betterCount = 0
@@ -100,8 +123,9 @@ for epoch in range(currEpoch, max_epochs):
         gt = data["gt"][0].cuda()
         lossBaseline = torch.nn.L1Loss()(inp, gt).item()
         print("Target Loss:", lossBaseline)
-        net.forward(inp, gt, training=True)
-        elbo = net.elbo(gt)
+        net.forward(inp, gt, training=False)
+        reconLoss, klLoss = net.elbo(gt)
+        elbo = -(reconLoss + 10.0 * klLoss)
         l2posterior = l2_regularisation(net.posterior)
         l2prior = l2_regularisation(net.prior)
         l2fcomb = l2_regularisation(net.fcomb.layers)
@@ -110,7 +134,12 @@ for epoch in range(currEpoch, max_epochs):
         print("Total Loss: ", loss.item())
         if(loss.item() < lossBaseline):
             betterCount += 1
-	eval_losses.append(loss.item())
+        eval_losses['rec'].append(reconLoss.item())
+        eval_losses['kl'].append(klLoss.item())
+        eval_losses['l2pos'].append(l2posterior.item())
+        eval_losses['l2pri'].append(l2prior.item())
+        eval_losses['l2fcom'].append(l2fcomb.item())
+        eval_losses['total'].append(loss.item())
         eval_targetLosses.append(lossBaseline)
         eval_count += 1
         eval_totalLoss += loss.item()
@@ -118,4 +147,4 @@ for epoch in range(currEpoch, max_epochs):
     print("EVAL Average Loss: ", eval_totalLoss/eval_count)
     print("EVAL Better than Target Loss: ", betterCount, "/", eval_count)
     with open(getModelFilePath(MODELS_DEST, LAYER, epoch).split('.')[0]+'_eval_loss', 'wb') as f:
-        pickle.dump({'losses': eval_losses, 'targetLosses': eval_targetLosses, 'count': eval_count}, f)
+        pickle.dump({'losses': eval_losses, 'targetLosses': eval_targetLosses, 'count': eval_count, 'betterCount': betterCount}, f)

@@ -317,4 +317,4 @@ class ProbabilisticUnet(nn.Module):
         self.mean_reconstruction_loss = torch.mean(reconstruction_loss)
         print("Reconstruction Loss:", self.mean_reconstruction_loss.item())
         print("KL Loss", self.kl.item())
-        return -(self.mean_reconstruction_loss + self.beta * self.kl)
+        return self.mean_reconstruction_loss, self.kl
