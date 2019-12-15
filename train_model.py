@@ -84,7 +84,7 @@ epochs = 1000
 #        break
 
 # print(len(smallerTrainloader))
-model_dest = '/scratch/amr1215/probunet_models/'
+model_dest = '/scratch/amr1215/probunet_models/fpn_res5_2_sum/'
 for epoch in range(epochs):
     # for step, (patch, mask, _) in enumerate(train_loader): 
     for idx, data in enumerate(train_loader):
