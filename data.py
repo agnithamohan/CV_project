@@ -1,5 +1,6 @@
 import os
 from torch.utils.data import DataLoader, Dataset
+import torch
 
 class GanDataset(Dataset):
     def __init__(self, inputsDir, gtDir, layerName):
