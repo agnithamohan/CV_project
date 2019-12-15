@@ -7,7 +7,7 @@ def getModelFilePath(basePath, layer, epoch):
 def getLatestModelEpoch(basePath, layer):
     modelsPath = os.path.join(basePath, layer)
     if not os.path.exists(modelsPath):
-	return None
+        return None
     modelFiles = [f for f in os.listdir(modelsPath) if (f.startswith('model_') and f.endswith(".pth"))]
     if modelFiles:
         epoch = [int(f.split('.')[-2].split('_')[1]) for f in modelFiles]

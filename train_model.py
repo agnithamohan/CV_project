@@ -35,6 +35,9 @@ GAN_DATASET = {
     }
 }
 
+if not os.path.exists(os.path.join(MODELS_DEST, LAYER)):
+    os.makedirs(os.path.join(MODELS_DEST, LAYER))
+
 # CREATE DATALOADERS
 train_dataset = GanDataset(GAN_DATASET['TRAIN']['INPUT'], GAN_DATASET['TRAIN']['GT'], LAYER)
 eval_dataset = GanDataset(GAN_DATASET['EVAL']['INPUT'], GAN_DATASET['EVAL']['GT'], LAYER)
@@ -72,7 +75,7 @@ for epoch in range(currEpoch, max_epochs):
         print("Epoch:", epoch, "idx:", idx)
         inp = data["input"][0].cuda()
         gt = data["gt"][0].cuda()
-	targetLoss = torch.nn.L1Loss()(inp, gt)
+        targetLoss = torch.nn.L1Loss()(inp, gt)
         print("Target Loss:", targetLoss.item())
         net.forward(inp, gt, training=True)
         reconLoss, klLoss = net.elbo(gt)
@@ -82,7 +85,7 @@ for epoch in range(currEpoch, max_epochs):
         l2fcomb = l2_regularisation(net.fcomb.layers)
         reg_loss = l2posterior + l2prior + l2fcomb
         loss = -elbo + 1e-5 * reg_loss
-        if(loss.item() < lossBaseline):
+        if(loss.item() < targetLoss.item()):
             betterCount += 1
         print("Total Loss: ", loss.item())
         train_losses['rec'].append(reconLoss.item())
@@ -96,6 +99,7 @@ for epoch in range(currEpoch, max_epochs):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+    
     with open(getModelFilePath(MODELS_DEST, LAYER, epoch).split('.')[0]+'_train_loss', 'wb') as f:
         pickle.dump({'losses': train_losses, 'targetLosses': train_targetLosses, 'count': train_count, 'betterCount': betterCount}, f)
     
