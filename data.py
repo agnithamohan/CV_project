@@ -35,7 +35,7 @@ class GanDataset(Dataset):
         gtFilepath = os.path.join(self.gtDir, self.layerName, filename)
         inpt = torch.load(inputFilepath, map_location="cpu")
         gt = torch.load(gtFilepath, map_location="cpu")
-        sample = {'input': inpt, 'gt': gt}
+        sample = {'input': inpt, 'gt': gt, 'filename': filename}
         return sample
 
 

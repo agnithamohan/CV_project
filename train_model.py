@@ -45,12 +45,12 @@ train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers
 eval_loader = DataLoader(eval_dataset, batch_size=1, shuffle=True, num_workers=4)
 
 # INITIALISE NETWORKS
-net = ProbabilisticUnet(input_channels=256, num_classes=256, num_filters=[256, 512, 1024, 2048], latent_dim=10, no_convs_fcomb=8, beta=10.0).cuda()
+net = ProbabilisticUnet(input_channels=256, num_classes=256, num_filters=[256, 512, 1024, 2048], latent_dim=100, no_convs_fcomb=4, beta=10.0).cuda()
 optimizer = torch.optim.Adam(net.parameters(), lr=1e-4, weight_decay=0)
 
 # LOAD PRESAVED MODEL IF EXISTS
 currEpoch = 0
-max_epochs = 20
+max_epochs = 100
 savedEpoch = getLatestModelEpoch(MODELS_DEST, LAYER)
 if savedEpoch:
     loadModel(net, optimizer, getModelFilePath(MODELS_DEST, LAYER, savedEpoch))
@@ -75,8 +75,11 @@ for epoch in range(currEpoch, max_epochs):
         print("Epoch:", epoch, "idx:", idx)
         inp = data["input"][0].cuda()
         gt = data["gt"][0].cuda()
+	print("Filename:", data["filename"])
         targetLoss = torch.nn.L1Loss()(inp, gt)
         print("Target Loss:", targetLoss.item())
+	if(torch.isnan(targetLoss)):
+		continue
         net.forward(inp, gt, training=True)
         reconLoss, klLoss = net.elbo(gt)
         elbo = -(reconLoss + 10.0 * klLoss)
