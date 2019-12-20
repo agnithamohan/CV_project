@@ -89,7 +89,6 @@ class AxisAlignedConvGaussian(nn.Module):
 
         encoding = self.encoder(input)
         self.show_enc = encoding
-	print("PRIOR NETWORK SHAPE", encoding.shape)
         #We only want the mean of the resulting hxw image
         encoding = torch.mean(encoding, dim=2, keepdim=True)
         encoding = torch.mean(encoding, dim=3, keepdim=True)
@@ -172,7 +171,6 @@ class Fcomb(nn.Module):
             #Concatenate the feature map (output of the UNet) and the sample taken from the latent space
             feature_map = torch.cat((feature_map, z), dim=self.channel_axis)
             output = self.layers(feature_map)
-            # return output
             return self.last_layer(output)
 
 
@@ -186,7 +184,7 @@ class ProbabilisticUnet(nn.Module):
     no_cons_per_block: no convs per block in the (convolutional) encoder of prior and posterior
     """
 
-    def __init__(self, input_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=8, no_convs_fcomb=4, beta=10.0):
+    def __init__(self, input_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=8, no_convs_fcomb=4, beta=10.0, layer=''):
         super(ProbabilisticUnet, self).__init__()
         self.input_channels = input_channels
         self.num_classes = num_classes
@@ -197,12 +195,16 @@ class ProbabilisticUnet(nn.Module):
         self.initializers = {'w':'he_normal', 'b':'normal'}
         self.beta = beta
         self.z_prior_sample = 0
+        prior_posterior_layers = {
+            'fpn_res5_2_sum': [256, 512, 1024, 2048],
+            'fpn_res4_5_sum': [256, 512, 1024, 1024, 1024, 1024, 2048],
+            'fpn_res3_3_sum': [256, 512, 1024, 1024, 1024, 2048],
+            'fpn_res2_2_sum': [256, 512, 1024, 1024, 1024, 1024, 2048]
+        }
 
         self.unet = Unet(self.input_channels, self.num_classes, self.num_filters, self.initializers, apply_last_layer=False, padding=True).to(device)
-        self.prior = AxisAlignedConvGaussian(self.input_channels, self.num_filters, self.no_convs_per_block, self.latent_dim,  self.initializers,).to(device)
-        self.posterior = AxisAlignedConvGaussian(self.input_channels, self.num_filters, self.no_convs_per_block, self.latent_dim, self.initializers, posterior=True).to(device)
-#	self.prior = AxisAlignedConvGaussian(self.input_channels, self.num_filters[:-1]+[1024, 1024, 1024, 2048], self.no_convs_per_block, self.latent_dim,  self.initializers,).to(device)
-#        self.posterior = AxisAlignedConvGaussian(self.input_channels, self.num_filters[:-1]+[1024, 1024, 1024, 2048], self.no_convs_per_block, self.latent_dim, self.initializers, posterior=True).to(device)
+        self.prior = AxisAlignedConvGaussian(self.input_channels, prior_posterior_layers[layer], self.no_convs_per_block, self.latent_dim,  self.initializers,).to(device)
+        self.posterior = AxisAlignedConvGaussian(self.input_channels, prior_posterior_layers[layer], self.no_convs_per_block, self.latent_dim, self.initializers, posterior=True).to(device)
         self.fcomb = Fcomb(self.num_filters, self.latent_dim, self.input_channels, self.num_classes, self.no_convs_fcomb, {'w':'orthogonal', 'b':'normal'}, use_tile=True).to(device)
 
     def forward(self, patch, segm, training=True):
@@ -265,44 +267,7 @@ class ProbabilisticUnet(nn.Module):
         """
         Calculate the evidence lower bound of the log-likelihood of P(Y|X)
         """
-
         criterion = torch.nn.L1Loss(reduction='none')
-        
-        # Algo 1
-        # mu2 = self.posterior_latent_space.base_dist.loc[0].view((-1, 1))
-        # mu1 = self.prior_latent_space.base_dist.loc[0].view((-1, 1))        
-        # sigma2 = torch.diag(self.posterior_latent_space.base_dist.scale[0])
-        # sigma1 = torch.diag(self.prior_latent_space.base_dist.scale[0])
-        
-        # mu2 = self.posterior_latent_space.loc[0].view((-1, 1))
-        # mu1 = self.prior_latent_space.loc[0].view((-1, 1))
-        # sigma2 = torch.diag(self.posterior_latent_space.scale[0])
-        # sigma1 = torch.diag(self.prior_latent_space.scale[0])
-        
-        # detsigma1 = torch.det(sigma1)
-        # detsigma2 = torch.det(sigma2)
-        # invsigma2 = torch.inverse(sigma2)   
-        # a = torch.log(detsigma2/detsigma1) - mu1.shape[-1]
-        # b = torch.trace(torch.mm(invsigma2, sigma1))
-        # c = torch.mm(torch.mm(torch.t(mu2-mu1), invsigma2), mu2-mu1)
-        # print("a:", a)
-        # print("b:", b)
-        # print("c:", c)
-        # klloss = (a+b+c) * 0.5
-        
-        # Algo 2
-        # muloss = torch.nn.MSELoss()(mu1, mu2)
-        # sigmaloss = torch.nn.MSELoss()(sigma1, sigma2)
-        # klloss = muloss + sigmaloss
-
-        # Algo 3
-        # t1 = torch.log(torch.abs(sigma2/(sigma1+(1.0e-5))) + 1.0e-5)
-        # t2 = ((sigma1.pow(2) + (mu1-mu2).pow(2))/((2*sigma2.pow(2))+(1.0e-5))) 
-        # klloss = t1+t2
-        # self.kl = torch.mean(klloss)
-        
-        # Algo 4
-        #Here we use the posterior sample sampled above
         if training:
             z_posterior = self.posterior_latent_space.rsample()
             self.reconstruction = self.reconstruct(use_posterior_mean=reconstruct_posterior_mean, calculate_posterior=False, z_posterior=z_posterior)
@@ -320,6 +285,4 @@ class ProbabilisticUnet(nn.Module):
         reconstruction_loss = criterion(input=self.reconstruction, target=segm)
         self.reconstruction_loss = torch.sum(reconstruction_loss)
         self.mean_reconstruction_loss = torch.mean(reconstruction_loss)
-        print("Reconstruction Loss:", self.mean_reconstruction_loss.item())
-        print("KL Loss", self.kl.item())
         return self.mean_reconstruction_loss, self.kl
