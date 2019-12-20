@@ -23,4 +23,5 @@ optional arguments:
 
 *To Evaluate the model:*
 - Run the evaluate.py file using the following command
-```python evaluate.py --layer fpn_res3_3_sum --model /scratch/amr1215/probunet_models/fpn_res3_3_sum/model_14.pth --input ./examples/frankfurt_000001_002634.pt --output ./out.pt```
+
+```python evaluate.py --layer fpn_res3_3_sum --model /models/model.pth --input ./examples/frankfurt_000001_002634.pt --output ./out.pt```
