@@ -198,7 +198,7 @@ class ProbabilisticUnet(nn.Module):
         prior_posterior_layers = {
             'fpn_res5_2_sum': [256, 512, 1024, 2048],
             'fpn_res4_5_sum': [256, 512, 1024, 1024, 1024, 1024, 2048],
-            'fpn_res3_3_sum': [256, 512, 1024, 1024, 1024, 2048],
+            'fpn_res3_3_sum': [256, 512, 1024, 2048],
             'fpn_res2_2_sum': [256, 512, 1024, 1024, 1024, 1024, 2048]
         }
 
@@ -207,7 +207,7 @@ class ProbabilisticUnet(nn.Module):
         self.posterior = AxisAlignedConvGaussian(self.input_channels, prior_posterior_layers[layer], self.no_convs_per_block, self.latent_dim, self.initializers, posterior=True).to(device)
         self.fcomb = Fcomb(self.num_filters, self.latent_dim, self.input_channels, self.num_classes, self.no_convs_fcomb, {'w':'orthogonal', 'b':'normal'}, use_tile=True).to(device)
 
-    def forward(self, patch, segm, training=True):
+    def forward(self, patch, segm=None, training=True):
         """
         Construct prior latent space for patch and run patch through UNet,
         in case training is True also construct posterior latent space
@@ -281,7 +281,7 @@ class ProbabilisticUnet(nn.Module):
             self.kl = KLD 
         else:
             self.reconstruction = self.sample(testing=False)
-	    self.kl = torch.zeros(1,1)
+        self.kl = torch.zeros(1,1)
         reconstruction_loss = criterion(input=self.reconstruction, target=segm)
         self.reconstruction_loss = torch.sum(reconstruction_loss)
         self.mean_reconstruction_loss = torch.mean(reconstruction_loss)
