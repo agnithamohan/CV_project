@@ -41,23 +41,25 @@ if not os.path.exists(os.path.join(MODELS_DEST, LAYER)):
 # CREATE DATALOADERS
 train_dataset = GanDataset(GAN_DATASET['TRAIN']['INPUT'], GAN_DATASET['TRAIN']['GT'], LAYER)
 eval_dataset = GanDataset(GAN_DATASET['EVAL']['INPUT'], GAN_DATASET['EVAL']['GT'], LAYER)
-train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=4)
-eval_loader = DataLoader(eval_dataset, batch_size=1, shuffle=True, num_workers=4)
+train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=0)
+eval_loader = DataLoader(eval_dataset, batch_size=1, shuffle=True, num_workers=0)
 
 # INITIALISE NETWORKS
-net = ProbabilisticUnet(input_channels=256, num_classes=256, num_filters=[256, 512, 1024, 2048], latent_dim=100, no_convs_fcomb=4, beta=10.0).cuda()
+net = ProbabilisticUnet(input_channels=256, num_classes=256, num_filters=[256, 512, 1024, 2048], latent_dim=10, no_convs_fcomb=8, beta=10.0).cuda()
 optimizer = torch.optim.Adam(net.parameters(), lr=1e-4, weight_decay=0)
 
-# LOAD PRESAVED MODEL IF EXISTS
 currEpoch = 0
-max_epochs = 100
+max_epochs = 200
 savedEpoch = getLatestModelEpoch(MODELS_DEST, LAYER)
 if savedEpoch:
     loadModel(net, optimizer, getModelFilePath(MODELS_DEST, LAYER, savedEpoch))
     currEpoch = savedEpoch+1
     
-
+#currEpoch=96
 for epoch in range(currEpoch, max_epochs):
+    #net = ProbabilisticUnet(input_channels=256, num_classes=256, num_filters=[256, 512, 1024, 2048], latent_dim=10, no_convs_fcomb=8, beta=10.0).cuda()
+    #optimizer = torch.optim.Adam(net.parameters(), lr=1e-4, weight_decay=0)
+    #loadModel(net, optimizer, getModelFilePath(MODELS_DEST, LAYER, epoch))
     # TRAINING
     net.train()
     train_losses = {
@@ -88,6 +90,8 @@ for epoch in range(currEpoch, max_epochs):
         l2fcomb = l2_regularisation(net.fcomb.layers)
         reg_loss = l2posterior + l2prior + l2fcomb
         loss = -elbo + 1e-5 * reg_loss
+        if(loss.item() > 100000):
+                continue
         if(loss.item() < targetLoss.item()):
             betterCount += 1
         print("Total Loss: ", loss.item())
@@ -125,13 +129,15 @@ for epoch in range(currEpoch, max_epochs):
     eval_count = 0
     betterCount = 0
     for idx, data in enumerate(eval_loader):
-        print("EVAL idx:", idx)
+	#if idx == 2:
+	#    break
+        #print("EVAL idx:", idx)
         inp = data["input"][0].cuda()
         gt = data["gt"][0].cuda()
         lossBaseline = torch.nn.L1Loss()(inp, gt).item()
         print("Target Loss:", lossBaseline)
         net.forward(inp, gt, training=False)
-        reconLoss, klLoss = net.elbo(gt)
+        reconLoss, klLoss = net.elbo(gt,training=False)
         elbo = -(reconLoss + 10.0 * klLoss)
         l2posterior = l2_regularisation(net.posterior)
         l2prior = l2_regularisation(net.prior)
@@ -150,6 +156,7 @@ for epoch in range(currEpoch, max_epochs):
         eval_targetLosses.append(lossBaseline)
         eval_count += 1
         eval_totalLoss += loss.item()
+    print("Epoch:", epoch)
     print("EVAL Total Loss: ", eval_totalLoss)
     print("EVAL Average Loss: ", eval_totalLoss/eval_count)
     print("EVAL Better than Target Loss: ", betterCount, "/", eval_count)

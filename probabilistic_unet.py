@@ -89,7 +89,7 @@ class AxisAlignedConvGaussian(nn.Module):
 
         encoding = self.encoder(input)
         self.show_enc = encoding
-
+	print("PRIOR NETWORK SHAPE", encoding.shape)
         #We only want the mean of the resulting hxw image
         encoding = torch.mean(encoding, dim=2, keepdim=True)
         encoding = torch.mean(encoding, dim=3, keepdim=True)
@@ -199,8 +199,10 @@ class ProbabilisticUnet(nn.Module):
         self.z_prior_sample = 0
 
         self.unet = Unet(self.input_channels, self.num_classes, self.num_filters, self.initializers, apply_last_layer=False, padding=True).to(device)
-        self.prior = AxisAlignedConvGaussian(self.input_channels, self.num_filters[:-1]+[1024, 1024, 1024, 2048], self.no_convs_per_block, self.latent_dim,  self.initializers,).to(device)
-        self.posterior = AxisAlignedConvGaussian(self.input_channels, self.num_filters[:-1]+[1024, 1024, 1024, 2048], self.no_convs_per_block, self.latent_dim, self.initializers, posterior=True).to(device)
+        self.prior = AxisAlignedConvGaussian(self.input_channels, self.num_filters, self.no_convs_per_block, self.latent_dim,  self.initializers,).to(device)
+        self.posterior = AxisAlignedConvGaussian(self.input_channels, self.num_filters, self.no_convs_per_block, self.latent_dim, self.initializers, posterior=True).to(device)
+#	self.prior = AxisAlignedConvGaussian(self.input_channels, self.num_filters[:-1]+[1024, 1024, 1024, 2048], self.no_convs_per_block, self.latent_dim,  self.initializers,).to(device)
+#        self.posterior = AxisAlignedConvGaussian(self.input_channels, self.num_filters[:-1]+[1024, 1024, 1024, 2048], self.no_convs_per_block, self.latent_dim, self.initializers, posterior=True).to(device)
         self.fcomb = Fcomb(self.num_filters, self.latent_dim, self.input_channels, self.num_classes, self.no_convs_fcomb, {'w':'orthogonal', 'b':'normal'}, use_tile=True).to(device)
 
     def forward(self, patch, segm, training=True):
@@ -223,8 +225,8 @@ class ProbabilisticUnet(nn.Module):
             self.z_prior_sample = z_prior
         else:
             #You can choose whether you mean a sample or the mean here. For the GED it is important to take a sample.
-            #z_prior = self.prior_latent_space.base_dist.loc 
-            z_prior = self.prior_latent_space.sample()
+            z_prior = self.prior_latent_space.base_dist.loc
+            #z_prior = self.prior_latent_space.sample()
             self.z_prior_sample = z_prior
         return self.fcomb.forward(self.unet_features,z_prior)
 
@@ -259,13 +261,12 @@ class ProbabilisticUnet(nn.Module):
             kl_div = log_posterior_prob - log_prior_prob
         return kl_div
 
-    def elbo(self, segm, analytic_kl=True, reconstruct_posterior_mean=False):
+    def elbo(self, segm, analytic_kl=True, reconstruct_posterior_mean=False,training=True):
         """
         Calculate the evidence lower bound of the log-likelihood of P(Y|X)
         """
 
         criterion = torch.nn.L1Loss(reduction='none')
-        z_posterior = self.posterior_latent_space.rsample()
         
         # Algo 1
         # mu2 = self.posterior_latent_space.base_dist.loc[0].view((-1, 1))
@@ -301,17 +302,21 @@ class ProbabilisticUnet(nn.Module):
         # self.kl = torch.mean(klloss)
         
         # Algo 4
-        mu2 = self.posterior_latent_space.base_dist.loc[0]
-        mu1 = self.prior_latent_space.base_dist.loc[0]
-        sigma2 = self.posterior_latent_space.base_dist.scale[0]
-        sigma1 = self.prior_latent_space.base_dist.scale[0]
-        logvar = sigma1 - sigma2
-        mean = mu1 - mu1
-        KLD = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp()) 
-        self.kl = KLD 
-
         #Here we use the posterior sample sampled above
-        self.reconstruction = self.reconstruct(use_posterior_mean=reconstruct_posterior_mean, calculate_posterior=False, z_posterior=z_posterior)
+        if training:
+            z_posterior = self.posterior_latent_space.rsample()
+            self.reconstruction = self.reconstruct(use_posterior_mean=reconstruct_posterior_mean, calculate_posterior=False, z_posterior=z_posterior)
+            mu2 = self.posterior_latent_space.base_dist.loc[0]
+            mu1 = self.prior_latent_space.base_dist.loc[0]
+            sigma2 = self.posterior_latent_space.base_dist.scale[0]
+            sigma1 = self.prior_latent_space.base_dist.scale[0]
+            logvar = sigma1 - sigma2
+            mean = mu1 - mu1
+            KLD = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp()) 
+            self.kl = KLD 
+        else:
+            self.reconstruction = self.sample(testing=False)
+	    self.kl = torch.zeros(1,1)
         reconstruction_loss = criterion(input=self.reconstruction, target=segm)
         self.reconstruction_loss = torch.sum(reconstruction_loss)
         self.mean_reconstruction_loss = torch.mean(reconstruction_loss)
